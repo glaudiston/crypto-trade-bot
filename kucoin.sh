@@ -12,6 +12,8 @@
 # - jq - json parser - https://stedolan.github.io/jq
 #
 
+tendency="${1^^}"
+echo "Working on tendency: ${tendency:-STABLE}";
 host='https://api.kucoin.com';
 endpoint_user='/v1/user/info'; # API endpoint
 endpoint_order_list='/v1/order/active-map';
@@ -111,6 +113,8 @@ function get_my_nano_balance()
 	# echo "Nano balance: $nano_balance"
 }
 
+# TODO: function to group current order book using less orders
+
 get_user_info;
 list_my_orders;
 echo "Hi ${user_name}, your orders are sells: ${sell_count}, buys: ${buy_count}";
@@ -126,7 +130,7 @@ do
 
 		if [ "${sell_count}" -ge "${order_count_limit}" -o "${buy_count}" -ge "${order_count_limit}" ]; then
 		{
-			echo -en "${BL}Sem ordens restantes, aguardando liberar (SELL: $sell_count, BUY: $buy_count)...";
+			echo -en "${BL}Order count limit reached, waiting (SELL: $sell_count, BUY: $buy_count, Nano: ${cur_price})...";
 			list_my_orders;
 			continue;
 		}
@@ -142,7 +146,6 @@ do
 		echo -ne "${BL}Nano price changed: ${cur_price} ...";
 
 		ensure_order=0;
-		#tendency="UP"
 		if [ "$tendency" != "DOWN" ]; then
 		{
 			if [ "${remain_sell_orders}" -le 0 ]; then

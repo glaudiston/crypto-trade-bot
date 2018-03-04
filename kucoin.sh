@@ -13,7 +13,7 @@
 #
 
 tendency="${1^^}"
-echo "Working on tendency: ${tendency:-STABLE}";
+echo "Working on tendency: ${tendency:-AUTO}";
 host='https://api.kucoin.com';
 endpoint_user='/v1/user/info'; # API endpoint
 endpoint_order_list='/v1/order/active-map';
@@ -121,12 +121,17 @@ function get_my_nano_balance()
 # TODO: function to group current order book using less orders
 
 get_user_info;
+echo "Hi ${user_name}";
+
 list_my_orders;
+echo "- orders are sells: ${sell_count}, buys: ${buy_count}";
 get_my_btc_balance;
+echo "- balance: BTC: ${btc_balance}";
 get_my_nano_balance;
+echo "- Nano: ${nano_balance}";
 get_nano_data;
 read all_balance < <( bc <<< "scale=8; ${btc_balance} + ${nano_balance} * ${cur_price}" )
-echo "Hi ${user_name}, your orders are sells: ${sell_count}, buys: ${buy_count}, balance: BTC: ${btc_balance}, Nano: ${nano_balance}, all: all_balance: ${all_balance}";
+echo "- all: all_balance: ${all_balance}";
 
 while sleep 1;
 do
@@ -152,8 +157,30 @@ do
 		# The precision of XRB is 6
 		amount_sell=$( bc <<< "scale=6; ( $nano_balance_free / 2 ) / ( ${remain_sell_orders} ) " );
 
-
 		echo -ne "${BL}Nano price changed: ${cur_price} ...";
+
+		if [ "$1" == "" ]; then
+			# if user not specified any tendency,
+			# lets try to detect current tendency
+			threshold_order=$(( order_count_limit * 20 / 100 ))
+			if [ "${remain_buy_orders}" -lt "${threshold_order}" -a "${remain_sell_orders}" -lt "${threshold_order}" ]; then
+				# if both, i don't know
+				# the order book is overloaded and we need to take a break
+				echo -en "${BL} Nano: ${cur_price}. Unable to detect tendency, Too much orders in both sides, waiting fulfil orders (SELL: $sell_count, BUY: $buy_count)...";
+				list_my_orders;
+				continue
+			elif [ "${remain_sell_orders}" -lt "${threshold_order}" -a "${tendency}" != "DOWN" ]; then
+				# if remain sell orders count is lower than 20% of order count limit
+				# then tendency is down
+				tendency="DOWN";
+				echo "New tendency ${tendency}";
+			elif [ "${remain_buy_orders}" -lt "${threshold_order}" -a "${tendency}" != "UP" ]; then
+				# if remain buy orders count is lower than 20% of order count limit
+				# then tendency is up
+				tendency="UP";
+				echo "New tendency ${tendency}";
+			fi
+		fi;
 
 		ensure_order=0;
 		if [ "$tendency" != "DOWN" ]; then
@@ -186,13 +213,14 @@ do
 					}
 					else
 					{
+						gain_percent="0.5";
 						query_string="amount=${amount}&price=${cur_sell_price}&symbol=XRB-BTC&type=BUY";
 						buy_resp=$(do_call POST "${query_string}");
 						# e coloca uma ordem de venda acima em um preço que tenha lucro, 
 						# deixando uma pequena reserva em nano a cada ordem
-						gain_sell_price="$( bc <<< "scale=8;$cur_sell_price * 1.005" )"
+						gain_sell_price="$( bc <<< "scale=8;$cur_sell_price * ( 1 + ${gain_percent}/100)" )"
 						endpoint="$endpoint_order_nano";
-						amount=$( bc <<< "scale=6; $amount * .995" )
+						read amount < <( bc <<< "scale=6; $amount * .995" )
 						query_string="amount=${amount}&price=$gain_sell_price&symbol=XRB-BTC&type=SELL";
 						sell_resp=$(do_call POST "${query_string}");
 						list_my_orders
@@ -240,11 +268,14 @@ do
 					}
 					else
 					{
+						#sell_and_buy ${amount} ${cur_buy_price} ${gain}
+						gain_percent="0.5";
 						query_string="amount=${amount}&price=${cur_buy_price}&symbol=XRB-BTC&type=SELL";
 						sell_resp=$(do_call POST "${query_string}");
+						#TODO ensure the full sell
 						# e coloca uma ordem de compra acima em um preço que tenha lucro, 
 						# deixando uma pequena reserva em btc a cada ordem
-						read gain_sell_price < <( bc <<< "scale=8;$cur_buy_price * .995" );
+						read gain_sell_price < <( bc <<< "scale=8;$cur_buy_price * ( 1 - ${gain_percent}/100 )" );
 						endpoint="$endpoint_order_nano";
 						query_string="amount=${amount}&price=$gain_sell_price&symbol=XRB-BTC&type=BUY";
 						buy_resp=$(do_call POST "${query_string}");
@@ -267,5 +298,5 @@ do
 	}
 	fi;
 };
-done
+done;
 

@@ -26,19 +26,22 @@ endpoint_xrb_balance="/v1/account/XRB/balance";
 # api_key='YOUR_API_KEY_HERE';
 . kucoin.conf
 
-linesize=$(tput cols)
-BL="$(echo -en "\r$(yes " " | head -n${linesize} | tr -d "\n")\r")"
+# using read to avoid subshells
+# when using this technique remember 
+# that read only read the first line
+read linesize < <(tput cols);
+read BL < <(echo -en "\r$(yes " " | head -n${linesize} | tr -d "\n")\r");
 function do_call()
 {
-	method="${1:-GET}"
-	data="${2}"
+	method="${1:-GET}";
+	data="${2}";
 	success="false";
 	while [ "$success" != "true" ];
 	do
-		nonce="$(($(date +%s%N)/1000000))";
+		read -N13 nonce < <( date +%s%N );
 		str_for_sign="${endpoint}/${nonce}/${query_string}";
 		# echo "DBG: $str_for_sign $data" 1>&2
-		signature="$(echo -n "${str_for_sign}" | base64 -w0 | openssl sha256 -hmac "$secret" | cut -d" " -f2)";
+		read signature < <(echo -n "${str_for_sign}" | base64 -w0 | openssl sha256 -hmac "$secret" | cut -d" " -f2);
 		result=$(curl -s \
 			-X $method \
 			-H "KC-API-KEY: ${api_key}" \
@@ -46,15 +49,15 @@ function do_call()
 			-H "KC-API-SIGNATURE: ${signature}" \
 			-d "$data" \
 			"${host}${endpoint}?${query_string}" );
-		success="$(echo "$result" | jq -r .success)";
+		read success < <( jq -r .success <<< "$result" );
 		if [ "$success" != "true" ]; then
-			code="$( jq -r '.code' <<< "$result" )";
-			msg="$( jq -r '.msg' <<< "$result" )";
+			read code < <( jq -r '.code' <<< "$result" );
+			read msg < <( jq -r '.msg' <<< "$result" );
 			echo -e "\t$code\t$msg\t$method\t$str_for_sign\t$result" >&2;
 			sleep 1;
 		fi
 	done;
-	echo "$result"
+	echo "$result";
 };
 # kucoin has a hard limit of 50 orders each side (buy,sell)
 # is healthy to limit bets to a lower count limit
@@ -65,8 +68,8 @@ function list_my_orders() {
 	query_string="";
 	my_orders="$(do_call)";
 
-	sell_count=$(echo "$my_orders" | jq -r ".data.SELL | length" );
-	buy_count=$(echo "$my_orders" | jq -r ".data.BUY | length" );
+	read sell_count < <(echo "$my_orders" | jq -r ".data.SELL | length" );
+	read buy_count < <(echo "$my_orders" | jq -r ".data.BUY | length" );
 	remain_sell_orders=$(( ${order_count_limit} - sell_count ));
 	remain_buy_orders=$(( ${order_count_limit} - buy_count ));
 }
@@ -85,10 +88,10 @@ function get_nano_data()
 	endpoint="${endpoint_tick}";
 	query_string="symbol=XRB-BTC";
 	last_tick="$(do_call)";
-	cur_price="$(echo "$last_tick" | jq -r .data.lastDealPrice)";
-	cur_buy_price="$(echo "$last_tick" | jq -r .data.buy)";
-	cur_sell_price="$(echo "$last_tick" | jq -r .data.sell)";
-	fee_rate="$(echo "$last_tick" | jq -r .data.feeRate)";
+	read cur_price < <(echo "$last_tick" | jq -r .data.lastDealPrice);
+	read cur_buy_price < <(echo "$last_tick" | jq -r .data.buy);
+	read cur_sell_price < <(echo "$last_tick" | jq -r .data.sell);
+	read fee_rate < <(echo "$last_tick" | jq -r .data.feeRate);
 }
 
 function get_my_btc_balance()
@@ -96,9 +99,11 @@ function get_my_btc_balance()
 	endpoint="$endpoint_btc_balance";
 	query_string="";
 	btc_balance_data="$(do_call)"
-	btc_balance_free=$(echo "$btc_balance_data" | jq -r .data.balance);
-	btc_balance_freeze=$(echo "$btc_balance_data" | jq -r .data.freezeBalance);
-	btc_balance=$( bc <<<  "scale=8; $btc_balance_free + $btc_balance_freeze "  )
+	read btc_balance_free < <(echo "$btc_balance_data" | jq -r .data.balance);
+	read btc_balance_freeze < <(echo "$btc_balance_data" | jq -r .data.freezeBalance);
+	# remove scientific precision, not supported by bc;
+	read btc_balance_freeze < <(bc <<< "scale=8;${btc_balance_freeze/[eE]-//10^}");
+	read btc_balance < <( bc <<< "scale=8; ${btc_balance_free/[eE]-//10^} + ${btc_balance_freeze/[eE]-//10^}" );
 	# echo "BTC balance: $btc_balance";
 }
 
@@ -107,8 +112,8 @@ function get_my_nano_balance()
 	endpoint="$endpoint_xrb_balance";
 	query_string="";
 	nano_balance_data=$(do_call);
-	nano_balance_free="$( echo "$nano_balance_data" | jq -r .data.balance)";
-	nano_balance_freeze="$( echo "$nano_balance_data" | jq -r .data.freezeBalance)";
+	read nano_balance_free < <( echo "$nano_balance_data" | jq -r .data.balance);
+	read nano_balance_freeze < <( echo "$nano_balance_data" | jq -r .data.freezeBalance);
 	nano_balance=$( bc <<< "scale=8; $nano_balance_free + $nano_balance_freeze" )
 	# echo "Nano balance: $nano_balance"
 }
@@ -117,7 +122,12 @@ function get_my_nano_balance()
 
 get_user_info;
 list_my_orders;
-echo "Hi ${user_name}, your orders are sells: ${sell_count}, buys: ${buy_count}";
+get_my_btc_balance;
+get_my_nano_balance;
+get_nano_data;
+read all_balance < <( bc <<< "scale=8; ${btc_balance} + ${nano_balance} * ${cur_price}" )
+echo "Hi ${user_name}, your orders are sells: ${sell_count}, buys: ${buy_count}, balance: BTC: ${btc_balance}, Nano: ${nano_balance}, all: all_balance: ${all_balance}";
+
 while sleep 1;
 do
 {
@@ -156,12 +166,12 @@ do
 			else
 			{
 				# se acreditamos na alta:
-				if [ $( bc <<<  "scale=8; $btc_balance_free > 0" ) == 1 ]; then
+				if [ "$( bc <<<  "scale=8; $btc_balance_free > 0" )" == "1" ]; then
 				{
 					# se tem btc disponivel,
 					# compra no novo preço atual
 					endpoint="$endpoint_order_nano";
-					amount="$( bc <<< "scale=6; $amount_btc_buy / $cur_sell_price" )";
+					read amount < <( bc <<< "scale=6; $amount_btc_buy / $cur_sell_price" );
 					if [ "$( bc <<< "scale=6; $amount < 0.1" )" == "1" ]; then
 					{
 						# XRB min buy amount
@@ -234,7 +244,7 @@ do
 						sell_resp=$(do_call POST "${query_string}");
 						# e coloca uma ordem de compra acima em um preço que tenha lucro, 
 						# deixando uma pequena reserva em btc a cada ordem
-						gain_sell_price="$( bc <<< "scale=8;$cur_buy_price * .995" )"
+						read gain_sell_price < <( bc <<< "scale=8;$cur_buy_price * .995" );
 						endpoint="$endpoint_order_nano";
 						query_string="amount=${amount}&price=$gain_sell_price&symbol=XRB-BTC&type=BUY";
 						buy_resp=$(do_call POST "${query_string}");

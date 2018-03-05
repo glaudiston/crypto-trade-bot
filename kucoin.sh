@@ -36,6 +36,8 @@ function do_call()
 	method="${1:-GET}";
 	data="${2}";
 	success="false";
+	error_count=0;
+	last_error="";
 	while [ "$success" != "true" ];
 	do
 		read -N13 nonce < <( date +%s%N );
@@ -51,11 +53,17 @@ function do_call()
 			"${host}${endpoint}?${query_string}" );
 		read success < <( jq -r .success <<< "$result" );
 		if [ "$success" != "true" ]; then
+			let error_count++;
 			read code < <( jq -r '.code' <<< "$result" );
-			read msg < <( jq -r '.msg' <<< "$result" );
-			echo -e "\t$code\t$msg\t$method\t$str_for_sign\t$result" >&2;
+			if [ "${code}" != "${last_error}" ]; then
+				read msg < <( jq -r '.msg' <<< "$result" );
+				echo -e "\t$code\t$msg\t$method\t$str_for_sign\t$result" >&2;
+			else
+				echo -e "${BL} Error repeats $error_count times;" >&2;
+			fi
+			last_error="$code";
 			sleep 1;
-		fi
+		fi;
 	done;
 	echo "$result";
 };
@@ -102,6 +110,7 @@ function get_my_btc_balance()
 	read btc_balance_free < <(echo "$btc_balance_data" | jq -r .data.balance);
 	read btc_balance_freeze < <(echo "$btc_balance_data" | jq -r .data.freezeBalance);
 	# remove scientific precision, not supported by bc;
+	read btc_balance_free < <(bc <<< "scale=8;${btc_balance_free/[eE]-//10^}");
 	read btc_balance_freeze < <(bc <<< "scale=8;${btc_balance_freeze/[eE]-//10^}");
 	read btc_balance < <( bc <<< "scale=8; ${btc_balance_free/[eE]-//10^} + ${btc_balance_freeze/[eE]-//10^}" );
 	# echo "BTC balance: $btc_balance";
@@ -114,6 +123,9 @@ function get_my_nano_balance()
 	nano_balance_data=$(do_call);
 	read nano_balance_free < <( echo "$nano_balance_data" | jq -r .data.balance);
 	read nano_balance_freeze < <( echo "$nano_balance_data" | jq -r .data.freezeBalance);
+	# remove scientific precision, not supported by bc;
+	read nano_balance_free < <(bc <<< "scale=6;${nano_balance_free/[eE]-//10^}");
+	read nano_balance_freeze < <(bc <<< "scale=6;${nano_balance_freeze/[eE]-//10^}");
 	nano_balance=$( bc <<< "scale=8; $nano_balance_free + $nano_balance_freeze" )
 	# echo "Nano balance: $nano_balance"
 }
@@ -166,18 +178,18 @@ do
 			if [ "${remain_buy_orders}" -lt "${threshold_order}" -a "${remain_sell_orders}" -lt "${threshold_order}" ]; then
 				# if both, i don't know
 				# the order book is overloaded and we need to take a break
-				echo -en "${BL} Nano: ${cur_price}. Unable to detect tendency, Too much orders in both sides, waiting fulfil orders (SELL: $sell_count, BUY: $buy_count)...";
+				echo -en "${BL} Nano: ${cur_price}. balance: ${all_balance}. Unable to detect tendency, Too much orders in both sides, waiting fulfill orders (SELL: $sell_count, BUY: $buy_count)...";
 				list_my_orders;
 				continue
-			elif [ "${remain_sell_orders}" -lt "${threshold_order}" -a "${tendency}" != "DOWN" ]; then
-				# if remain sell orders count is lower than 20% of order count limit
-				# then tendency is down
-				tendency="DOWN";
-				echo "New tendency ${tendency}";
 			elif [ "${remain_buy_orders}" -lt "${threshold_order}" -a "${tendency}" != "UP" ]; then
 				# if remain buy orders count is lower than 20% of order count limit
 				# then tendency is up
 				tendency="UP";
+				echo "New tendency ${tendency}";
+			elif [ "${remain_sell_orders}" -lt "${threshold_order}" -a "${tendency}" != "DOWN" ]; then
+				# if remain sell orders count is lower than 20% of order count limit
+				# then tendency is down
+				tendency="DOWN";
 				echo "New tendency ${tendency}";
 			fi
 		fi;
@@ -187,12 +199,12 @@ do
 		{
 			if [ "${remain_sell_orders}" -le 0 ]; then
 			{
-				echo -en "${BL}Sem ordens de venda restantes, aguardando liberar (SELL: $sell_count, BUY: $buy_count)...";
+				echo -en "${BL}No sell order remaining, waiting to free (SELL: $sell_count, BUY: $buy_count)...";
 				list_my_orders;
 			}
 			else
 			{
-				# se acreditamos na alta:
+				# to sky:
 				if [ "$( bc <<<  "scale=8; $btc_balance_free > 0" )" == "1" ]; then
 				{
 					# se tem btc disponivel,
@@ -224,7 +236,7 @@ do
 						query_string="amount=${amount}&price=$gain_sell_price&symbol=XRB-BTC&type=SELL";
 						sell_resp=$(do_call POST "${query_string}");
 						list_my_orders
-						echo -e "${BL}Nano: ${cur_price}, sells: ${sell_count}, buys: ${buy_count}, Comprou $amount Nano a ${cur_sell_price}, agendou a venda a ${gain_sell_price}";
+						echo -e "${BL}Nano: ${cur_price}, balance: ${all_balance}, sells: ${sell_count}, buys: ${buy_count}, Comprou $amount Nano a ${cur_sell_price}, agendou a venda a ${gain_sell_price}";
 					}
 					fi;
 				}
@@ -280,7 +292,7 @@ do
 						query_string="amount=${amount}&price=$gain_sell_price&symbol=XRB-BTC&type=BUY";
 						buy_resp=$(do_call POST "${query_string}");
 						list_my_orders
-						echo -e "${BL}Nano: ${cur_price}, sells: ${sell_count}, buys: ${buy_count}, Vendeu $amount Nano a ${cur_buy_price}, agendou a compra a ${gain_sell_price}";
+						echo -e "${BL}Nano: ${cur_price}, balance: ${all_balance}, sells: ${sell_count}, buys: ${buy_count}, Vendeu $amount Nano a ${cur_buy_price}, agendou a compra a ${gain_sell_price}";
 					}
 					fi;
 				}
